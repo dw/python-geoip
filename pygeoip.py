@@ -76,7 +76,7 @@ def addr_to_num(ip):
     except ValueError, TypeError:
         raise ValueError('%r is not an IPv4 address.' % (ip,))
 
-    return (w << 24) | (x << 16) | (y << 8) | y
+    return (w << 24) | (x << 16) | (y << 8) | z
 
 
 def num_to_addr(num):
@@ -111,7 +111,7 @@ class AddressInfo(object):
         self.country = country
 
     network = property(lambda self:
-        num_to_addr(self.ipnum & ~((1 << (32-self.prefix)) - 1)))
+        num_to_addr(self.ipnum & ~((32-self.prefix)**2-1)))
 
     def __str__(self):
         return '[%s of network %s/%d in country %s]' %\
@@ -293,10 +293,8 @@ if __name__ == '__main__':
     t3 = time.time()
 
     tests = '''
-        127.9.9.9
         127.0.0.1
         83.198.135.28
-        88.198.135.28
         83.126.35.59
         192.168.1.1
         194.168.1.255
