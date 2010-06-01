@@ -22,6 +22,7 @@ SEGMENT_RECORD_LENGTH = 3
 STANDARD_RECORD_LENGTH = 3
 ORG_RECORD_LENGTH = 4
 MAX_RECORD_LENGTH = 4
+FULL_RECORD_LENGTH = 50
 NUM_DB_TYPES = 20
 
 GEOIP_COUNTRY_EDITION     = 1
@@ -55,6 +56,20 @@ GeoIP_country_code = '''
     SR ST SV SY SZ TC TD TF TG TH TJ TK TM TN TO TL TR TT TV TW TZ UA UG UM US
     UY UZ VA VC VE VG VI VN VU WF WS YE YT RS ZA ZM ME ZW A1 A2 O1 AX GG IM JE
     BL MF
+'''.split()
+
+GeoIP_country_continent = '''
+    AS EU EU AS AS SA SA EU AS SA AF AN SA OC EU OC SA AS EU SA AS EU AF EU AS
+    AF AF SA AS SA SA SA AS AF AF EU SA NA AS AF AF AF EU AF OC SA AF AS SA SA
+    SA AF AS AS EU EU AF EU SA SA AF SA EU AF AF AF EU AF EU OC SA OC EU EU EU
+    AF EU SA AS SA AF EU SA AF AF SA AF EU SA SA OC AF SA AS AF SA EU SA EU AS
+    EU AS AS AS AS AS EU EU SA AS AS AF AS AS OC AF SA AS AS AS SA AS AS AS SA
+    EU AS AF AF EU EU EU AF AF EU EU AF OC EU AF AS AS AS OC SA AF SA EU AF AS
+    AF NA AS AF AF OC AF OC AF SA EU EU AS OC OC OC AS SA SA OC OC AS AS EU SA
+    OC SA AS EU OC SA AS AF EU AS AF AS OC AF AF EU AS AF EU EU EU AF EU AF AF
+    SA AF SA AS AF SA AF AF AF AS AS OC AS AF OC AS AS SA OC AS AF EU AF OC NA
+    SA AS EU SA SA SA SA AS OC OC OC AS AF EU AF AF EU AF -- -- -- EU EU EU EU
+    SA SA
 '''.split()
 
 
@@ -93,23 +108,68 @@ def num_to_addr(num):
                             (num >> 8) & 0xff,
                             (num & 0xff))
 
+def latin1_to_utf8(string):
+    return string.decode('latin-1').encode('utf-8')
+
+
+def safe_lookup(lst, idx):
+    if idx is None:
+        return None
+    return lst[idx]
+
 
 #
 # Classes.
 #
+
+
+class ReadBuffer(object):
+    '''
+    Utility to read data more easily.
+    '''
+
+    buffer = None
+
+    def __init__(self, source, size, seek_offset=None, seek_whence=os.SEEK_SET):
+        fp = StringIO(source)
+        if seek_offset is not None:
+            fp.seek(seek_offset, seek_whence)
+        self.buffer = fp.read(size)
+
+    def read_string(self):
+        '''
+        Read a null-terminated string.
+
+        @returns            Result as a string.
+        '''
+        result, self.buffer = self.buffer.split('\0', 1)
+        return result
+
+    def read_int(self, size):
+        '''
+        Read a multibyte integer.
+
+        @param[in]  size    Number of bytes to read as an integer.
+        @returns            Result as an integer.
+        '''
+        result = sum(ord(self.buffer[i]) << (8*i) for i in range(size))
+        self.buffer = self.buffer[size:]
+        return result
+
 
 class AddressInfo(object):
     '''
     Representation of a database lookup result.
     '''
 
-    __slots__ = [ 'ip', 'ipnum', 'prefix', 'country' ]
+    __slots__ = [ 'ip', 'ipnum', 'prefix', 'country', 'continent' ]
 
-    def __init__(self, ip=None, ipnum=None, prefix=None, country=None):
+    def __init__(self, ip=None, ipnum=None, prefix=None, country_id=None):
         self.ip = ip
         self.ipnum = ipnum
         self.prefix = prefix
-        self.country = country
+        self.country = safe_lookup(GeoIP_country_code, country_id)
+        self.continent = safe_lookup(GeoIP_country_continent, country_id)
 
     network = property(lambda self:
         num_to_addr(self.ipnum & ~((32-self.prefix)**2-1)))
@@ -117,6 +177,31 @@ class AddressInfo(object):
     def __str__(self):
         return '[%s of network %s/%d in country %s]' %\
                (self.ip, self.network, self.prefix, self.country)
+
+
+class BigAddressInfo(AddressInfo):
+    '''
+    Representation of a database lookup result with more info in it.
+    '''
+
+    # __slots__ is inherited and appended to.
+    __slots__ = [ 'city', 'region', 'postal_code', 'metro_code', 'area_code', 'longitude', 'latitude' ]
+
+    def __init__(self, ip=None, ipnum=None, prefix=None, country_id=None,
+                 city=None, region=None, postal_code=None, metro_code=None, area_code=None,
+                 longitude=None, latitude=None):
+        AddressInfo.__init__(self, ip, ipnum, prefix, country_id)
+        self.city = city or None
+        self.region = region or None
+        self.postal_code = postal_code or None
+        self.metro_code = metro_code
+        self.area_code = area_code
+        self.longitude = longitude
+        self.latitude = latitude
+
+    def __str__(self):
+        return '[%s of network %s/%d in city %s, %s]' %\
+               (self.ip, self.network, self.prefix, self.city, self.country)
 
 
 class Database(object):
@@ -136,9 +221,11 @@ class Database(object):
         self.cache = file(filename).read()
         self._setup_segments()
 
-        if self.db_type != GEOIP_COUNTRY_EDITION:
-            raise NotImplemented('GeoIP.dat is not Country Edition; '
-                                 'other editions are not supported yet.')
+        if self.db_type not in (GEOIP_COUNTRY_EDITION,
+                                GEOIP_CITY_EDITION_REV0,
+                                GEOIP_CITY_EDITION_REV1):
+            raise NotImplementedError('Database edition is not supported yet; '
+                                      'Please use a Country or City database.')
 
     def _setup_segments(self):
         self.segments = None
@@ -257,34 +344,92 @@ class Database(object):
             "Perhaps database is corrupt?" % ipnum
 
 
-    def lookup(self, ip):
-        '''
-        Lookup an IP address returning an AddressInfo instance describing its
-        location.
-
-        @param[in]  ip      IPv4 address as a string.
-        @returns            AddressInfo instance.
-        '''
+    def _lookup_country(self, ip):
+        "Lookup a country db entry."
 
         ipnum = addr_to_num(ip)
         prefix, num = self._seek_record(ipnum)
 
         num -= COUNTRY_BEGIN
         if num:
-            country = GeoIP_country_code[num - 1]
+            country_id = num - 1
         else:
-            country = None
+            country_id = None
 
-        return AddressInfo(country=country, ip=ip, ipnum=ipnum, prefix=prefix)
+        return AddressInfo(country_id=country_id, ip=ip, ipnum=ipnum, prefix=prefix)
+
+    def _lookup_city(self, ip):
+        "Look up a city db entry."
+
+        ipnum = addr_to_num(ip)
+        prefix, num = self._seek_record(ipnum)
+        record, next_record_ptr = self._extract_record(num, None)
+        return BigAddressInfo(ip=ip, ipnum=ipnum, prefix=prefix, **record)
+
+    def _extract_record(self, seek_record, next_record_ptr):
+        if seek_record == self.segments[0]:
+            return {'country_id': None}, next_record_ptr
+
+        seek_offset = seek_record + (2 * self.record_length - 1) * self.segments[0]
+        record_buf = ReadBuffer(self.cache, FULL_RECORD_LENGTH, seek_offset)
+        record = {}
+
+        # get country
+        record['country_id'] = record_buf.read_int(1) - 1
+
+        # get region
+        record['region'] = record_buf.read_string()
+
+        # get city
+        record['city'] = latin1_to_utf8(record_buf.read_string())
+
+        # get postal code
+        record['postal_code'] = record_buf.read_string()
+
+        # get latitude
+        record['latitude'] = record_buf.read_int(3) / 10000.0 - 180
+
+        # get longitude
+        record['longitude'] = record_buf.read_int(3) / 10000.0 - 180
+
+        # get area code and metro code for post April 2002 databases and for US locations
+        if (self.db_type == GEOIP_CITY_EDITION_REV1) and (GeoIP_country_code[record['country_id']] == 'US'):
+            metro_area_combo = record_buf.read_int(3)
+            record['metro_code'] = metro_area_combo / 1000
+            record['area_code'] = metro_area_combo % 1000
+
+        # Used for GeoIP_next_record (which this code doesn't have.)
+        if next_record_ptr is not None:
+            next_record_ptr = seek_record - len(record_buf)
+
+        return record, next_record_ptr
+
+    def lookup(self, ip):
+        '''
+        Lookup an IP address returning an AddressInfo (or BigAddressInfo)
+        instance describing its location.
+
+        @param[in]  ip      IPv4 address as a string.
+        @returns            AddressInfo (or BigAddressInfo) instance.
+        '''
+
+        if self.db_type in (GEOIP_COUNTRY_EDITION, GEOIP_PROXY_EDITION, GEOIP_NETSPEED_EDITION):
+            return self._lookup_country(ip)
+        elif self.db_type in (GEOIP_CITY_EDITION_REV0, GEOIP_CITY_EDITION_REV1):
+            return self._lookup_city(ip)
 
 
 
 
 if __name__ == '__main__':
-    import time
+    import time, sys
+
+    dbfile = 'GeoIP.dat'
+    if len(sys.argv) > 1:
+        dbfile = sys.argv[1]
 
     t1 = time.time()
-    db = Database('GeoIP.dat')
+    db = Database(dbfile)
     t2 = time.time()
 
     print db.info()
@@ -297,10 +442,15 @@ if __name__ == '__main__':
         83.126.35.59
         192.168.1.1
         194.168.1.255
+        196.25.210.14
+        64.22.109.113
     '''.split()
 
     for test in tests:
-        print db.lookup(test)
+        addr_info = db.lookup(test)
+        print addr_info
+        if isinstance(addr_info, BigAddressInfo):
+            print "   ", dict((key, getattr(addr_info, key)) for key in dir(addr_info) if not key.startswith('_'))
 
     t4 = time.time()
 
