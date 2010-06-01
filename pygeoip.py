@@ -144,11 +144,11 @@ class Database(object):
         self.segments = None
 
         # default to GeoIP Country Edition
-        db_type = GEOIP_COUNTRY_EDITION
-        record_length = STANDARD_RECORD_LENGTH
+        self.db_type = GEOIP_COUNTRY_EDITION
+        self.record_length = STANDARD_RECORD_LENGTH
 
         fp = StringIO(self.cache)
-        fp.seek(-31, os.SEEK_END)
+        fp.seek(-3, os.SEEK_END)
 
         for i in range(STRUCTURE_INFO_MAX_SIZE):
             delim = fp.read(3)
@@ -157,36 +157,34 @@ class Database(object):
                 fp.seek(-4, os.SEEK_CUR)
                 continue
 
-            db_type = ord(fp.read(1))
+            self.db_type = ord(fp.read(1))
 
             # Region Edition, pre June 2003.
-            if db_type == GEOIP_REGION_EDITION_REV0:
-                segments = [STATE_BEGIN_REV0]
+            if self.db_type == GEOIP_REGION_EDITION_REV0:
+                self.segments = [STATE_BEGIN_REV0]
 
             # Region Edition, post June 2003.
-            elif db_type == GEOIP_REGION_EDITION_REV1:
-                segments = [STATE_BEGIN_REV1]
+            elif self.db_type == GEOIP_REGION_EDITION_REV1:
+                self.segments = [STATE_BEGIN_REV1]
 
             # City/Org Editions have two segments, read offset of second segment
-            elif db_type in (GEOIP_CITY_EDITION_REV0, GEOIP_CITY_EDITION_REV1,
-                             GEOIP_ORG_EDITION, GEOIP_ISP_EDITION,
-                             GEOIP_ASNUM_EDITION):
-                segments = [0]
+            elif self.db_type in (GEOIP_CITY_EDITION_REV0,
+                                  GEOIP_CITY_EDITION_REV1,
+                                  GEOIP_ORG_EDITION, GEOIP_ISP_EDITION,
+                                  GEOIP_ASNUM_EDITION):
+                self.segments = [0]
 
                 for idx, ch in enumerate(fp.read(SEGMENT_RECORD_LENGTH)):
-                    segments[0] += ch << (idx * 8)
+                    self.segments[0] += ord(ch) << (idx * 8)
 
-                if db_type in (GEOIP_ORG_EDITION, GEOIP_ISP_EDITION):
-                    record_length = ORG_RECORD_LENGTH
+                if self.db_type in (GEOIP_ORG_EDITION, GEOIP_ISP_EDITION):
+                    self.record_length = ORG_RECORD_LENGTH
 
             break
 
-        if db_type in (GEOIP_COUNTRY_EDITION, GEOIP_PROXY_EDITION,
+        if self.db_type in (GEOIP_COUNTRY_EDITION, GEOIP_PROXY_EDITION,
                        GEOIP_NETSPEED_EDITION, GEOIP_COUNTRY_EDITION_V6):
             self.segments = [COUNTRY_BEGIN]
-
-        self.db_type = db_type
-        self.record_length = record_length
 
     def info(self):
         '''
@@ -196,7 +194,7 @@ class Database(object):
         '''
 
         fp = StringIO(self.cache)
-        fp.seek(-31, os.SEEK_END)
+        fp.seek(-3, os.SEEK_END)
 
         hasStructureInfo = False
 
