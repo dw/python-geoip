@@ -218,7 +218,7 @@ class Database(object):
         '''
 
         self.filename = filename
-        self.cache = file(filename).read()
+        self.cache = open(filename, 'rb').read()
         self._setup_segments()
 
         if self.db_type not in (GEOIP_COUNTRY_EDITION,
