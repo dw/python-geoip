@@ -3,7 +3,7 @@
 from distutils.core import setup
 
 setup(
-    name='Pure Python GeoIP Library',
+    name='Pure-Python-GeoIP-Library',
     version='0.2',
     description='''
         Library to perform lookups in Maxmind GeoIP, designed specifically for
