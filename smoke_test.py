@@ -31,7 +31,11 @@ def clookup(ip):
         return match.group(1)
 
 def main():
-    db = pygeoip.Database('GeoIP.dat')
+    dbfile = 'GeoIP.dat'
+    if len(sys.argv) > 1:
+        dbfile = sys.argv[1]
+
+    db = pygeoip.Database(dbfile)
 
     for ip in (make_ip() for x in xrange(TRIES)):
         cc1 = clookup(ip)
