@@ -4,11 +4,12 @@
 Pure Python reader for GeoIP Country Edition databases.
 '''
 
-__author__ = 'David Wilson <dw@botanicus.net>'
+__author__ = 'David Wilson <dw@botanicus.net>; Quang Nguyen <contact@develbranch.com>'
 
 
 import os
 import struct
+import gzip
 
 from cStringIO import StringIO
 
@@ -210,15 +211,28 @@ class Database(object):
     edition.
     '''
 
-    def __init__(self, filename):
+    def __init__(self, filename=None, data=None):
         '''
         Initialize a new GeoIP reader instance.
 
-        @param[in]  filename    Path to GeoIP.dat as a string.
+        @param[in]  filename    Path to GeoIP.dat or GeoIP.dat.gz as a string.
+        @param[in]  data        File content as a string.
         '''
 
         self.filename = filename
-        self.cache = open(filename, 'rb').read()
+        if self.filename:
+            fp = open(self.filename, 'rb')
+            magic = fp.read(2)
+            fp.seek(0)
+            if magic == '\x1f\x8b':  # file is gzip compressed
+                decompressedFile = gzip.GzipFile(fileobj=fp, mode='rb')
+                self.cache = decompressedFile.read()
+            else:
+                self.cache = fp.read()
+        else:
+            self.cache = data
+        if not self.cache:
+            raise IOError("No GeoIP Database")
         self._setup_segments()
 
         if self.db_type not in (GEOIP_COUNTRY_EDITION,
